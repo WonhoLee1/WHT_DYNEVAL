@@ -12,6 +12,96 @@ from scipy import signal
 from scipy.spatial.distance import cdist
 
 
+def worst_axis_nrmse(y_exp: np.ndarray, y_sim: np.ndarray) -> float | None:
+    """축별 자가폭 NRMSE 중 최솟값을 반환한다.
+
+    정지축(폭이 전체 대각선의 1% 미만)은 제외해
+    순수 1축 운동이 0점으로 오판되는 것을 막는다.
+    유효 축이 하나도 없으면 None을 반환한다.
+
+    Parameters
+    ----------
+    y_exp : np.ndarray
+        (N, 3) 기준 궤적.
+    y_sim : np.ndarray
+        (N, 3) 해석 궤적.
+
+    Returns
+    -------
+    float | None
+        최악축 점수 또는 None.
+    """
+    e = np.asarray(y_exp, dtype=np.float64)
+    s = np.asarray(y_sim, dtype=np.float64)
+    ptp = np.ptp(e, axis=0)
+    diag = max(float(np.linalg.norm(ptp)), 1e-9)
+    active = ptp > 0.01 * diag
+    if not bool(np.any(active)):
+        return None
+    rmse = np.sqrt(np.mean((e - s) ** 2, axis=0))
+    return float(
+        min(
+            max(0.0, (1.0 - r / max(p, 1e-9)) * 100.0)
+            for r, p, a in zip(rmse, ptp, active)
+            if a
+        )
+    )
+
+
+def total_dynamic_accuracy(
+    time: np.ndarray,
+    v_exp: np.ndarray,
+    v_sim: np.ndarray,
+    x_exp: np.ndarray,
+    x_sim: np.ndarray,
+    w_vel: float = 0.6,
+) -> dict:
+    """대표 단일 Headline(Total Dynamic Accuracy)을 계산한다.
+
+    Total (%) = w_vel × S_vel + (1 − w_vel) × S_disp.
+    1D는 S&G(v)+NRMSE(x), 3D는 Vector S&G(v)+ATE(r) 조합을 자동 선택한다.
+
+    Parameters
+    ----------
+    time : np.ndarray
+        시간 배열.
+    v_exp : np.ndarray
+        기준 속도 신호 ((N,) 또는 (N, 3)).
+    v_sim : np.ndarray
+        해석 속도 신호.
+    x_exp : np.ndarray
+        기준 변위 신호.
+    x_sim : np.ndarray
+        해석 변위 신호.
+    w_vel : float
+        속도 가중치 (기본 0.6, 충돌·진동 중심이면 0.7, 정적 중심이면 0.5).
+
+    Returns
+    -------
+    dict
+        Total(%), S_vel(%), S_disp(%), 가중치의 결과 딕셔너리.
+    """
+    s_vel = ComprehensiveDynamicEvaluator(time, v_exp, mode="vel").evaluate(v_sim)[
+        "Main_Headline_Accuracy(%)"
+    ]
+    ev_disp = ComprehensiveDynamicEvaluator(time, x_exp, mode="disp")
+    rep_disp = ev_disp.evaluate(x_sim)
+    s_disp = rep_disp["Main_Headline_Accuracy(%)"]
+    detail: dict = {"S_vel(%)": s_vel, "S_disp(%)": s_disp, "w_vel": w_vel}
+    if ev_disp.is_3d:
+        worst = worst_axis_nrmse(x_exp, x_sim)
+        if worst is None:
+            worst = float(s_disp)
+        worst = round(worst, 1)
+        s_disp = min(float(s_disp), worst)
+        detail["S_disp_ATE(%)"] = rep_disp["Main_Headline_Accuracy(%)"]
+        detail["WorstAxis(%)"] = worst
+        detail["S_disp(%)"] = s_disp
+    total = w_vel * float(s_vel) + (1.0 - w_vel) * float(s_disp)
+    detail["Total(%)"] = round(total, 1)
+    return detail
+
+
 class ComprehensiveDynamicEvaluator:
     """1D/3D 시계열 데이터(변위, 속도) 통합 정합도 평가 및 최적화 엔진.
 
@@ -534,6 +624,10 @@ class ComprehensiveDynamicEvaluator:
             else:
                 report["Main_Headline_Accuracy(%)"] = round(ate_score, 1)
                 report["Spatial_ATE_Score(%)"] = round(ate_score, 1)
+                worst = worst_axis_nrmse(self.y_exp, s)
+                report["Worst_Axis_NRMSE_Score(%)"] = (
+                    round(worst, 1) if worst is not None else round(ate_score, 1)
+                )
             report["3D_Trajectory_Metrics"] = {
                 "Spatial_RMSE_ATE(m)": round(spatial_rmse, 5),
                 "Bounding_Box_Diag_Lref(m)": round(self.ref_scale, 4),
