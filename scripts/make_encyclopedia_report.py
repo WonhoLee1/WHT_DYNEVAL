@@ -1094,7 +1094,8 @@ Headline이 상승하면 2단계 파이프라인이 차원·모드에 무관하�
 <section class="sec rule" id="rule"><h2>6. 실무 규칙</h2>
 <ol>
 <li>최적화 루프에는 <code>calc_loss</code>만 넣는다 (CORA/S&amp;G 직접 목적함수 금지).</li>
-<li>보고 Headline: 변위=NRMSE(1D)/ATE(3D), 속도=S&amp;G(1D/3D 벡터).</li>
+<li>보고 Headline: 변위=NRMSE(1D)/ATE(3D), 속도=S&amp;G(1D/3D 벡터).
+진동성·0평균 변위는 <code>headline="sg"</code> 옵션으로 S&amp;G Headline 사용 가능.</li>
 <li>원인 분해 부록: 속도=CORA 3축(Kp/Kv/Kg)+M/P, 변위=피크·잔류, 3D=Procrustes+Hausdorff.</li>
 <li>케이스 공정비교는 고정 L_ref(스트로크) 또는 데이터 자동 L_diag로만 한다.</li>
 <li>Corr·R² 단독 보고 금지 (맹점 표로 증빙).</li>
@@ -1185,9 +1186,9 @@ def main() -> None:
                      "SG", "M", "P", "CORA", "Kp", "Kv", "Kg"],
                     "복합악조건 1D 속도 전지표",
                 ),
-                "tab_comb_d": html_table(c_names, _cd, "복합악조건 1D 변위 수치"),
-                "tab_comb_v": html_table(c_names, _cv, "복합악조건 1D 속도 수치"),
-                "tab_comb_3d": html_table(c3_names, _r3, "복합악조건 3D 수치"),
+                "tab_comb_d": html_table(c_names, _cd, "복합악조건 1D 변위 수치 (Headline = Global NRMSE)"),
+                "tab_comb_v": html_table(c_names, _cv, "복합악조건 1D 속도 수치 (Headline = Sprague & Geers)"),
+                "tab_comb_3d": html_table(c3_names, _r3, "복합악조건 3D 수치 (Total = 0.6S_vel + 0.4S_disp)"),
                 "axis_grid_3d_v2": plot_3d_axis_grid(
                     np.linspace(0, 1.5, 300), _c3, "복합악조건 3D 축별 시계열"),
                 "comb_path_3d_v2": plot_case_grid_3dpath(
@@ -1326,10 +1327,10 @@ def main() -> None:
         "comb_grid_3d": comb_grid_3d,
         "cur_3d": cur_3d,
         "cur_3d_vel": cur_3d_vel,
-        "tab_disp": html_table(names, disp_rows, "1D 변위 전 케이스 수치"),
-        "tab_vel": html_table(names, vel_rows, "1D 속도 전 케이스 수치"),
-        "tab_3d_disp": html_table(names3, d3_rows, "3D 변위 전 케이스 수치"),
-        "tab_3d_vel": html_table(names3, v3_rows, "3D 속도 전 케이스 수치"),
+        "tab_disp": html_table(names, disp_rows, "1D 변위 전 케이스 수치 (Headline = Global NRMSE)"),
+        "tab_vel": html_table(names, vel_rows, "1D 속도 전 케이스 수치 (Headline = Sprague & Geers)"),
+        "tab_3d_disp": html_table(names3, d3_rows, "3D 변위 전 케이스 수치 (Headline = Spatial ATE)"),
+        "tab_3d_vel": html_table(names3, v3_rows, "3D 속도 전 케이스 수치 (Headline = Vector S&G)"),
         "opt_conv": opt_conv,
         "opt_before_after": opt_ba,
         "opt4_conv": opt4_conv,
@@ -1346,9 +1347,9 @@ def main() -> None:
         "cur_comb_d": cur_comb_d,
         "cur_comb_v": cur_comb_v,
         "cur_comb_3d": cur_comb_3d,
-        "tab_comb_d": html_table(c_names, _cd, "복합악조건 1D 변위 전 케이스 수치"),
-        "tab_comb_v": html_table(c_names, _cv, "복합악조건 1D 속도 전 케이스 수치"),
-        "tab_comb_3d": html_table(c3_names, _r3, "복합악조건 3D 전 케이스 수치"),
+        "tab_comb_d": html_table(c_names, _cd, "복합악조건 1D 변위 전 케이스 수치 (Headline = Global NRMSE) (Headline = Global NRMSE)"),
+        "tab_comb_v": html_table(c_names, _cv, "복합악조건 1D 속도 전 케이스 수치 (Headline = Sprague & Geers) (Headline = Sprague & Geers)"),
+        "tab_comb_3d": html_table(c3_names, _r3, "복합악조건 3D 전 케이스 수치 (Total = 0.6S_vel + 0.4S_disp)"),
     }
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(build_html(ctx))

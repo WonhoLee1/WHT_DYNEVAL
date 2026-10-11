@@ -143,6 +143,10 @@ class ComprehensiveDynamicEvaluator:
     tau_allow : float, optional
         CORA 시간 지연 평가 시 0%로 간주할 허용 최대 지연 (초).
         None이면 max(0.02, 전체시간*0.1).
+    headline : str
+        Headline 지표 선택 (auto/nrmse/sg/ate).
+        auto면 모드 기본값(vel→sg, 1D disp→nrmse, 3D disp→ate).
+        disp에서 sg 지정 시 진동성·0평균 신호에 한해 S&G Headline 사용.
     """
 
     #: DTW 계산 전 리샘플링 상한 (계산량 O(n^2) 억제용).
@@ -157,12 +161,16 @@ class ComprehensiveDynamicEvaluator:
         mode: str = "vel",
         ref_scale: float | None = None,
         tau_allow: float | None = None,
+        headline: str = "auto",
     ) -> None:
         self.t = np.asarray(time, dtype=np.float64)
         self.y_exp = np.asarray(y_exp, dtype=np.float64)
         self.mode = mode.lower()
         if self.mode not in ("vel", "disp"):
             raise ValueError("mode는 'vel' 또는 'disp'이어야 합니다.")
+        if headline not in ("auto", "nrmse", "sg", "ate"):
+            raise ValueError("headline은 auto/nrmse/sg/ate 중 하나여야 합니다.")
+        self.headline = headline
         if self.t.ndim != 1 or len(self.t) < 4:
             raise ValueError("time은 길이가 4 이상인 1D 배열이어야 합니다.")
         if not np.all(np.diff(self.t) > 0):
@@ -236,6 +244,81 @@ class ComprehensiveDynamicEvaluator:
                 raise ValueError("3D 모드에서 y_sim은 (N, 3)이어야 합니다.")
         return arr
 
+    def _aligned(
+        self, y_sim: np.ndarray, t_sim: np.ndarray | None
+    ) -> tuple["ComprehensiveDynamicEvaluator", np.ndarray]:
+        """서로 다른 샘플링을 성긴 쪽 격자로 보간 정렬한다.
+
+        t_sim이 없고 길이만 다르면 동일 구간 균등 샘플링으로 간주하고
+        인덱스 정규화 보간한다. 구간 불일치는 np.interp 클램프로 처리한다.
+
+        Parameters
+        ----------
+        y_sim : np.ndarray
+            해석 신호.
+        t_sim : np.ndarray | None
+            해석 신호 시간축 (None이면 기준과 동일 구간으로 간주).
+
+        Returns
+        -------
+        tuple
+            (정렬된 평가기, 정렬된 해석 신호).
+        """
+        s = np.asarray(y_sim, dtype=np.float64)
+        if t_sim is None:
+            if s.shape == self.y_exp.shape:
+                return self, self._as_sim(s)
+            if s.ndim != self.y_exp.ndim or (
+                self.is_3d and s.shape[1] != 3
+            ):
+                raise ValueError("y_sim 차원이 기준 신호와 다릅니다.")
+            xp = np.linspace(0.0, 1.0, s.shape[0])
+            fp = np.linspace(0.0, 1.0, self.N)
+            if self.is_3d:
+                aligned = np.stack(
+                    [np.interp(fp, xp, s[:, k]) for k in range(3)], axis=1
+                )
+            else:
+                aligned = np.interp(fp, xp, s.flatten())
+            return self, aligned
+        tt = np.asarray(t_sim, dtype=np.float64).flatten()
+        if tt.shape[0] != s.shape[0]:
+            raise ValueError("t_sim 길이가 y_sim과 일치해야 합니다.")
+        if s.shape == self.y_exp.shape and np.array_equal(tt, self.t):
+            return self, self._as_sim(s)
+        if s.ndim != self.y_exp.ndim or (self.is_3d and s.shape[1] != 3):
+            raise ValueError("y_sim 차원이 기준 신호와 다릅니다.")
+        if len(tt) <= self.N:
+            t_new = tt
+            if self.is_3d:
+                exp_new = np.stack(
+                    [np.interp(tt, self.t, self.y_exp[:, k]) for k in range(3)],
+                    axis=1,
+                )
+                sim_new = s
+            else:
+                exp_new = np.interp(tt, self.t, self.y_exp)
+                sim_new = s.flatten()
+        else:
+            if self.is_3d:
+                exp_new = self.y_exp
+                sim_new = np.stack(
+                    [np.interp(self.t, tt, s[:, k]) for k in range(3)], axis=1
+                )
+            else:
+                exp_new = self.y_exp
+                sim_new = np.interp(self.t, tt, s.flatten())
+            t_new = self.t
+        ev = ComprehensiveDynamicEvaluator(
+            time=t_new,
+            y_exp=exp_new,
+            mode=self.mode,
+            ref_scale=self.ref_scale,
+            tau_allow=self.tau_allow,
+            headline=self.headline,
+        )
+        return ev, sim_new
+
     @staticmethod
     def _stride_for(n: int, limit: int) -> int:
         """길이 n을 limit 이하로 줄이는 균일 솎음 간격을 구한다."""
@@ -269,6 +352,22 @@ class ComprehensiveDynamicEvaluator:
         else:
             corr = 0.0
         return {"MSE": mse, "RMSE": rmse, "R2": r2, "Pearson_Corr": corr}
+
+    def resolve_headline(self) -> str:
+        """headline 설정값을 실제 지표명으로 확정한다.
+
+        Returns
+        -------
+        str
+            nrmse/sg/ate 중 하나.
+        """
+        if self.headline != "auto":
+            if not self.is_3d and self.headline == "ate":
+                raise ValueError("1D에서는 ate Headline을 사용할 수 없습니다.")
+            return self.headline
+        if self.mode == "vel":
+            return "sg"
+        return "ate" if self.is_3d else "nrmse"
 
     @staticmethod
     def _dtw_mean_distance(a: np.ndarray, b: np.ndarray) -> float:
@@ -561,20 +660,25 @@ class ComprehensiveDynamicEvaluator:
     # ------------------------------------------------------------------
     # 종합 보고서
     # ------------------------------------------------------------------
-    def evaluate(self, y_sim: np.ndarray) -> dict:
+    def evaluate(self, y_sim: np.ndarray, t_sim: np.ndarray | None = None) -> dict:
         """차원·모드에 맞는 100% 만점 체계 정합도 보고서를 생성한다.
 
         Parameters
         ----------
         y_sim : np.ndarray
             해석 신호 ((N,) 또는 (N, 3)).
+        t_sim : np.ndarray | None
+            해석 신호 시간축. 다르면 성긴 쪽 격자로 보간 정렬한다.
 
         Returns
         -------
         dict
             Headline 정확도 및 세부 지표 딕셔너리.
         """
-        s = self._as_sim(y_sim)
+        ev, s = self._aligned(y_sim, t_sim)
+        if ev is not self:
+            return ev.evaluate(s)
+        s = self._as_sim(s)
         report: dict = {
             "Dimension": "3D Vector" if self.is_3d else "1D Scalar",
             "Mode": "Velocity" if self.mode == "vel" else "Displacement",
@@ -586,17 +690,19 @@ class ComprehensiveDynamicEvaluator:
             cora = self.calc_1d_cora_light(s)
             sg = self.calc_sprague_geers(s)
             nrmse_score = max(0.0, (1.0 - stats["RMSE"] / self.ref_scale) * 100.0)
-            if self.mode == "vel":
+            hl = self.resolve_headline()
+            report["Headline_Func"] = hl
+            report["Sprague_Geers"] = {
+                "M": round(sg["M"], 4),
+                "P": round(sg["P"], 4),
+                "C": round(sg["C"], 4),
+            }
+            report["Global_NRMSE_Score(%)"] = round(nrmse_score, 1)
+            if hl == "sg":
                 report["Main_Headline_Accuracy(%)"] = round(sg["Score(%)"], 1)
-                report["Sprague_Geers"] = {
-                    "M": round(sg["M"], 4),
-                    "P": round(sg["P"], 4),
-                    "C": round(sg["C"], 4),
-                }
                 report["CORA_Light_Decomposition"] = cora
             else:
                 report["Main_Headline_Accuracy(%)"] = round(nrmse_score, 1)
-                report["Global_NRMSE_Score(%)"] = round(nrmse_score, 1)
                 tail = max(1, int(self.N * 0.1))
                 res_err = abs(float(np.mean(self.y_exp[-tail:])) - float(np.mean(s[-tail:])))
                 report["Residual_Disp_Error(m)"] = round(res_err, 5)
@@ -614,16 +720,18 @@ class ComprehensiveDynamicEvaluator:
             diff = self.y_exp - s
             spatial_rmse = float(np.sqrt(np.mean(np.sum(diff**2, axis=1))))
             ate_score = max(0.0, (1.0 - spatial_rmse / self.ref_scale) * 100.0)
-            if self.mode == "vel":
+            hl = self.resolve_headline()
+            report["Headline_Func"] = hl
+            report["Vector_Sprague_Geers"] = {
+                "M_Energy": round(sg_3d["M"], 4),
+                "P_Phase_Orientation": round(sg_3d["P"], 4),
+                "C_Combined": round(sg_3d["C"], 4),
+            }
+            report["Spatial_ATE_Score(%)"] = round(ate_score, 1)
+            if hl == "sg":
                 report["Main_Headline_Accuracy(%)"] = round(sg_3d["Score(%)"], 1)
-                report["Vector_Sprague_Geers"] = {
-                    "M_Energy": round(sg_3d["M"], 4),
-                    "P_Phase_Orientation": round(sg_3d["P"], 4),
-                    "C_Combined": round(sg_3d["C"], 4),
-                }
             else:
                 report["Main_Headline_Accuracy(%)"] = round(ate_score, 1)
-                report["Spatial_ATE_Score(%)"] = round(ate_score, 1)
                 worst = worst_axis_nrmse(self.y_exp, s)
                 report["Worst_Axis_NRMSE_Score(%)"] = (
                     round(worst, 1) if worst is not None else round(ate_score, 1)
@@ -641,7 +749,7 @@ class ComprehensiveDynamicEvaluator:
     # ------------------------------------------------------------------
     # 최적화 손실
     # ------------------------------------------------------------------
-    def calc_loss(self, y_sim: np.ndarray) -> float:
+    def calc_loss(self, y_sim: np.ndarray, t_sim: np.ndarray | None = None) -> float:
         """구배 기반 탐색기용 전구간 연속 미분 가능 무차원 손실을 반환한다.
 
         불연속 연산(argmax, max 클리핑)을 배제하고 L2·피크·면적 항만
@@ -651,13 +759,17 @@ class ComprehensiveDynamicEvaluator:
         ----------
         y_sim : np.ndarray
             해석 신호 ((N,) 또는 (N, 3)).
+        t_sim : np.ndarray | None
+            해석 신호 시간축. 다르면 성긴 쪽 격자로 보간 정렬한다.
 
         Returns
         -------
         float
             무차원 복합 손실값 (0 = 완전 일치).
         """
-        s = self._as_sim(y_sim)
+        ev, s = self._aligned(y_sim, t_sim)
+        if ev is not self:
+            return ev.calc_loss(s)
         if not self.is_3d:
             if self.mode == "vel":
                 p_exp = float(np.max(np.abs(self.y_exp)))
